@@ -8,7 +8,6 @@ import threading
 from datetime import datetime, timedelta
 from payment import YookassaPayment
 from database import db_manager, Base, engine, UserSubscription, SessionLocal
-from utils import TarotUtils, SubscriptionPlans
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -19,15 +18,6 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 YOOKASSA_SHOP_ID = os.environ.get('YOOKASSA_SHOP_ID', 'test_shop_id')
 YOOKASSA_SECRET_KEY = os.environ.get('YOOKASSA_SECRET_KEY', 'test_secret_key')
-
-if not BOT_TOKEN:
-    bot = None
-else:
-    from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-    from telegram.ext import Dispatcher, MessageHandler, Filters, CallbackQueryHandler
-    from telegram.utils.request import Request
-    request_obj = Request(con_pool_size=8)
-    bot = Bot(token=BOT_TOKEN, request=request_obj)
 
 # Карты Таро для разных раскладов
 TAROT_DECK = {
@@ -67,13 +57,6 @@ MINOR_ARCANA = {
     "Король Жезлов": {"meaning": "Лидерство, энергия, вдохновение", "reverse": "Тирания, упрямство"}
 }
 
-# Стикеры
-STICKERS = {
-    'mystic': ['CAACAgIAAxkBAAEDLZFl6ScS5rnyU49SD8X83tK0NSj-kAACXxkAAkLjGUvj7-Px9gU_-TUE'],
-    'crystal': ['CAACAgIAAxkBAAEDLZVl6SdLIwn6gAJW8wU_y1I0qI-ovAACXhgAAp60EUvJNlI5BRmlqjUE'],
-    'moon': ['CAACAgIAAxkBAAEDLZdl6SdZ0fIplYz0R4XgRg5HHtoVnwACbBkAAk3gEEtoSXRhfYt3-jUE']
-}
-
 # Расклады Таро
 SPREADS = {
     "past_present_future": {
@@ -81,14 +64,6 @@ SPREADS = {
         "cards": 3,
         "positions": ["Прошлое", "Настоящее", "Будущее"],
         "description": "Классический расклад для понимания временных линий"
-    },
-    "celtic_cross": {
-        "name": "Кельтский Крест",
-        "cards": 10,
-        "positions": ["Сердце ситуации", "Препятствие", "Сознательные цели", "Бессознательные влияния", 
-                     "Прошлое", "Ближайшее будущее", "Ваше отношение", "Внешние влияния", 
-                     "Надежды и страхи", "Итог"],
-        "description": "Глубокий анализ ситуации со всех сторон"
     },
     "relationship": {
         "name": "Отношения",
@@ -111,103 +86,35 @@ SPREADS = {
     }
 }
 
+# Инициализация бота будет после проверки токена
+bot = None
+application = None
+
 class TarotMasterBot:
     def __init__(self):
-        self.personality = """
-        Ты - мудрый таролог и духовный наставник по имени Ариэль, 35 лет. 
+        self.personality = """Ты - мудрый таролог и духовный наставник по имени Ариэль, 35 лет. 
         Обладаешь глубокими знаниями в области Таро, психологии и духовных практик.
         Твой стиль - мудрый, заботливый, немного мистический, но приземленный.
-        """
+        Помогаешь людям видеть скрытые аспекты ситуаций через карты Таро."""
+        
         self.active_spreads = {}
         self.user_questions = {}
-        
-        # Запускаем ежедневные советы
-        self.start_daily_insights()
-    
-    def start_daily_insights(self):
-        """Ежедневные мистические советы"""
-        def insights_loop():
-            while True:
-                try:
-                    now = datetime.now()
-                    if now.hour == 10 and now.minute == 0:
-                        active_users = self.get_active_users()
-                        for user_id in active_users:
-                            try:
-                                insight = self.generate_daily_insight()
-                                bot.send_message(chat_id=user_id, text=insight)
-                                logger.info(f"🔮 Sent daily insight to user {user_id}")
-                            except Exception as e:
-                                logger.error(f"Error sending insight: {e}")
-                        time.sleep(3600)  # Ждем час чтобы не повторять
-                    time.sleep(60)  # Проверяем каждую минуту
-                except Exception as e:
-                    logger.error(f"Error in insights loop: {e}")
-                    time.sleep(300)
-        
-        thread = threading.Thread(target=insights_loop, daemon=True)
-        thread.start()
-    
-    def generate_daily_insight(self):
-        """Генерация ежедневного совета"""
-        card = random.choice(list(TAROT_DECK.keys()))
-        meaning = TAROT_DECK[card]["meaning"]
-        return f"🌙 *Карта дня:* {card}\n\n{meaning}\n\nСегодня доверяй своей интуиции."
-    
-    def get_active_users(self):
-        """Получение активных пользователей"""
-        try:
-            session = SessionLocal()
-            active_subs = session.query(UserSubscription).filter(
-                UserSubscription.expires_at > datetime.now()
-            ).all()
-            session.close()
-            return [sub.user_id for sub in active_subs]
-        except Exception as e:
-            logger.error(f"Error getting active users: {e}")
-            return []
-    
-    def draw_cards(self, count):
-        """Вытаскивание карт"""
-        all_cards = list(TAROT_DECK.items()) + list(MINOR_ARCANA.items())
-        selected = random.sample(all_cards, min(count, len(all_cards)))
-        
-        cards = []
-        for card_name, card_info in selected:
-            is_reversed = random.random() < 0.3
-            cards.append({
-                "name": card_name,
-                "meaning": card_info["reverse"] if is_reversed else card_info["meaning"],
-                "reversed": is_reversed
-            })
-        return cards
-    
-    def process_message(self, update, context):
-        """Обработка сообщений"""
-        try:
-            user_message = update.message.text
-            user_id = update.message.from_user.id
-            chat_id = update.message.chat_id
-            
-            if user_message == '/start':
-                self.send_welcome_message(chat_id)
-            elif user_message == '/tarot':
-                self.send_session_start(chat_id)
-            elif user_message == '/insight':
-                insight = self.generate_daily_insight()
-                bot.send_message(chat_id=chat_id, text=insight, parse_mode='Markdown')
-            else:
-                response = self.get_deepseek_response(user_message, user_id)
-                bot.send_message(chat_id=chat_id, text=response)
-                
-        except Exception as e:
-            logger.error(f"Error processing message: {e}")
     
     def send_welcome_message(self, chat_id):
         """Приветственное сообщение"""
         welcome_text = """🔮 *Добро пожаловать в Храм Мудрости Таро!*
 
-Я - Ариэль, твой проводник в мир символов и инсайтов."""
+Я - Ариэль, твой проводник в мир символов и инсайтов. 
+
+✨ *Что я умею:*
+• Проводить расклады Таро
+• Помогать увидеть скрытые аспекты ситуаций
+• Давать мудрые советы на основе карт
+• Быть твоим духовным наставником
+
+💫 *Готов(а) начать путешествие к себе?*"""
+        
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         
         keyboard = [[InlineKeyboardButton("🌀 Начать сессию", callback_data="start_session")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -223,8 +130,135 @@ class TarotMasterBot:
         """Начало сессии"""
         session_text = """🌀 *Настройка на энергию вопроса*
 
-Сформулируй свой вопрос:"""
-        bot.send_message(chat_id=chat_id, text=session_text, parse_mode='Markdown')
+Перед раскладом важно сформулировать вопрос. 
+
+*Примеры вопросов:*
+• Что мне нужно знать о текущей ситуации?
+• Какой путь выбрать?
+• Что скрывает от меня эта ситуация?
+
+📝 *Напиши свой вопрос:*"""
+        
+        bot.send_message(
+            chat_id=chat_id,
+            text=session_text,
+            parse_mode='Markdown'
+        )
+    
+    def draw_cards(self, count):
+        """Вытаскивание карт"""
+        all_cards = list(TAROT_DECK.items()) + list(MINOR_ARCANA.items())
+        selected = random.sample(all_cards, min(count, len(all_cards)))
+        
+        cards = []
+        for card_name, card_info in selected:
+            is_reversed = random.random() < 0.3
+            cards.append({
+                "name": card_name,
+                "meaning": card_info["reverse"] if is_reversed else card_info["meaning"],
+                "reversed": is_reversed,
+                "symbol": self.get_card_symbol(card_name)
+            })
+        return cards
+    
+    def get_card_symbol(self, card_name):
+        """Получение символа для карты"""
+        symbols = {
+            "Маг": "⚡", "Верховная Жрица": "🌙", "Императрица": "🌸",
+            "Император": "👑", "Иерофант": "📿", "Влюбленные": "💞",
+            "Колесница": "🛡️", "Сила": "🦁", "Отшельник": "🕯️",
+            "Колесо Фортуны": "🔄", "Справедливость": "⚖️", "Повешенный": "🙏",
+            "Смерть": "🦋", "Умеренность": "⚗️", "Дьявол": "😈",
+            "Башня": "⚡", "Звезда": "⭐", "Луна": "🌙",
+            "Солнце": "☀️", "Суд": "🎺", "Мир": "🌍", "Шут": "🃏"
+        }
+        return symbols.get(card_name, "🔮")
+    
+    def perform_spread(self, chat_id, spread_type, question):
+        """Проведение расклада"""
+        spread = SPREADS.get(spread_type)
+        if not spread:
+            bot.send_message(chat_id=chat_id, text="🌀 Такого расклада пока нет.")
+            return
+        
+        # Рисуем карты
+        cards = self.draw_cards(spread["cards"])
+        
+        # Формируем сообщение
+        cards_text = f"""✨ *Карты выпали!*
+
+*Вопрос:* {question}
+*Расклад:* {spread['name']}
+
+"""
+        
+        for i, (position, card) in enumerate(zip(spread["positions"], cards)):
+            cards_text += f"\n{position}: *{card['name']}* {card['symbol']}"
+            if card['reversed']:
+                cards_text += " (перевернута)"
+            cards_text += f"\n_{card['meaning']}_\n"
+        
+        bot.send_message(
+            chat_id=chat_id,
+            text=cards_text,
+            parse_mode='Markdown'
+        )
+        
+        # Добавляем интерпретацию
+        interpretation = self.get_tarot_interpretation(question, spread_type, cards)
+        bot.send_message(
+            chat_id=chat_id,
+            text=f"🔍 *Интерпретация:*\n\n{interpretation}",
+            parse_mode='Markdown'
+        )
+    
+    def get_tarot_interpretation(self, question, spread_type, cards):
+        """Получение интерпретации от DeepSeek"""
+        try:
+            headers = {
+                'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
+                'Content-Type': 'application/json'
+            }
+            
+            # Подготавливаем описание карт
+            cards_description = ""
+            spread = SPREADS[spread_type]
+            
+            for i, (position, card) in enumerate(zip(spread["positions"], cards)):
+                cards_description += f"\n{position}: {card['name']} ({'перевернута' if card['reversed'] else 'прямая'}) - {card['meaning']}"
+            
+            system_prompt = f"""Ты - опытный таролог. Интерпретируй расклад Таро.
+
+Вопрос: {question}
+Расклад: {spread['name']}
+
+Карты:{cards_description}
+
+Дай глубокую, но практическую интерпретацию. Будь мудрым и поддерживающим."""
+            
+            payload = {
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": "Интерпретируй этот расклад, пожалуйста."}
+                ],
+                "temperature": 0.8,
+                "max_tokens": 500
+            }
+            
+            response = requests.post('https://api.deepseek.com/v1/chat/completions', 
+                                   headers=headers, json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'choices' in data and len(data['choices']) > 0:
+                    return data['choices'][0]['message']['content']
+            
+            return "Карты говорят о необходимости доверять своей интуиции. Прислушайся к внутреннему голосу."
+                
+        except Exception as e:
+            logger.error(f"Error getting tarot interpretation: {e}")
+            return "Мудрость карт приходит через тишину. Дай себе время почувствовать их послание."
     
     def get_deepseek_response(self, user_message, user_id):
         """Получение ответа от DeepSeek"""
@@ -251,54 +285,173 @@ class TarotMasterBot:
             
             if response.status_code == 200:
                 data = response.json()
-                return data['choices'][0]['message']['content']
+                if 'choices' in data and len(data['choices']) > 0:
+                    return data['choices'][0]['message']['content']
+            
             return "🌀 Энергия сегодня рассеяна. Попробуй позже."
                 
         except Exception as e:
             logger.error(f"Error calling DeepSeek: {e}")
             return "🌀 Произошла ошибка. Попробуй еще раз."
     
-    def handle_callback(self, update, context):
+    async def process_message(self, update, context):
+        """Обработка сообщений"""
+        try:
+            user_message = update.message.text
+            user_id = update.message.from_user.id
+            chat_id = update.message.chat_id
+            
+            if user_message == '/start':
+                self.send_welcome_message(chat_id)
+            elif user_message == '/tarot':
+                self.send_session_start(chat_id)
+            elif user_message == '/help':
+                help_text = """🔮 *Команды Таро-бота:*
+
+/start - Начало работы
+/tarot - Начать сессию Таро
+/help - Помощь
+
+💫 Просто напиши вопрос, и я помогу!"""
+                await context.bot.send_message(chat_id=chat_id, text=help_text, parse_mode='Markdown')
+            elif user_id in self.user_questions:
+                # Если есть активный вопрос, делаем расклад
+                spread_type = "past_present_future"  # простой расклад по умолчанию
+                self.perform_spread(chat_id, spread_type, user_message)
+                if user_id in self.user_questions:
+                    del self.user_questions[user_id]
+            else:
+                # Обычный разговор
+                response = self.get_deepseek_response(user_message, user_id)
+                await context.bot.send_message(chat_id=chat_id, text=response)
+                
+        except Exception as e:
+            logger.error(f"Error processing message: {e}")
+    
+    async def handle_callback(self, update, context):
         """Обработка callback-ов"""
         query = update.callback_query
-        query.answer()
+        await query.answer()
         
         if query.data == "start_session":
             self.send_session_start(query.message.chat_id)
+            self.user_questions[query.from_user.id] = True
 
 # Инициализация бота
-tarot_master = TarotMasterBot()
+if BOT_TOKEN:
+    from telegram import Bot
+    from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler
+    
+    # Создаем бота и приложение
+    bot = Bot(token=BOT_TOKEN)
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Инициализируем логику бота
+    tarot_master = TarotMasterBot()
+    
+    # Добавляем обработчики
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tarot_master.process_message))
+    application.add_handler(CallbackQueryHandler(tarot_master.handle_callback))
+    
+    # Команды
+    async def start_command(update, context):
+        await tarot_master.send_welcome_message(update.message.chat_id)
+    
+    async def tarot_command(update, context):
+        await tarot_master.send_session_start(update.message.chat_id)
+        tarot_master.user_questions[update.message.from_user.id] = True
+    
+    async def help_command(update, context):
+        help_text = """🔮 *Команды Таро-бота:*
 
-# Создаем диспетчер
-if bot:
-    from telegram.ext import Dispatcher, MessageHandler, Filters, CallbackQueryHandler
-    dp = Dispatcher(bot, None, workers=0, use_context=True)
-    dp.add_handler(MessageHandler(Filters.text, tarot_master.process_message))
-    dp.add_handler(CallbackQueryHandler(tarot_master.handle_callback))
+/start - Начало работы
+/tarot - Начать сессию Таро
+/help - Помощь
+
+💫 Просто напиши вопрос, и я помогу!"""
+        await context.bot.send_message(chat_id=update.message.chat_id, text=help_text, parse_mode='Markdown')
+    
+    application.add_handler(MessageHandler(filters.Regex('^/start$'), start_command))
+    application.add_handler(MessageHandler(filters.Regex('^/tarot$'), tarot_command))
+    application.add_handler(MessageHandler(filters.Regex('^/help$'), help_command))
+    
+    logger.info("✅ Bot initialized successfully")
+else:
+    logger.warning("⚠️ BOT_TOKEN not set. Bot functionality disabled.")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.method == 'POST':
         try:
-            if not bot:
+            if not application:
                 return jsonify({"error": "Bot not configured"}), 400
             
-            from telegram import Update
-            update = Update.de_json(request.get_json(), bot)
-            dp.process_update(update)
+            # Обрабатываем обновление
+            update = Update.de_json(request.get_json(force=True), application.bot)
+            application.update_queue.put(update)
+            
             return jsonify({"status": "success"}), 200
             
         except Exception as e:
             logger.error(f"Error in webhook: {e}")
-            return jsonify({"status": "error"}), 400
+            return jsonify({"status": "error", "message": str(e)}), 400
+
+@app.route('/yookassa-webhook', methods=['POST'])
+def yookassa_webhook():
+    try:
+        event_json = request.get_json()
+        logger.info(f"Yookassa webhook: {event_json}")
+        
+        event_type = event_json.get('event')
+        payment_data = event_json.get('object', {})
+        
+        if event_type == 'payment.succeeded':
+            metadata = payment_data.get('metadata', {})
+            user_id = metadata.get('user_id')
+            plan_type = metadata.get('plan_type')
+            
+            if user_id and plan_type:
+                logger.info(f"✅ Payment succeeded for user {user_id}, plan: {plan_type}")
+                
+        return jsonify({"status": "success"}), 200
+        
+    except Exception as e:
+        logger.error(f"Yookassa webhook error: {e}")
+        return jsonify({"status": "error"}), 400
+
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    """Установка webhook (вызовите этот URL после деплоя)"""
+    try:
+        if not bot:
+            return "Bot not configured", 400
+        
+        # Получаем URL из запроса или используем Render URL
+        webhook_url = request.args.get('url', request.host_url + 'webhook')
+        
+        # Устанавливаем webhook
+        bot.set_webhook(url=webhook_url)
+        
+        return f"Webhook set to: {webhook_url}", 200
+    except Exception as e:
+        return f"Error: {e}", 400
 
 @app.route('/')
 def home():
     return jsonify({
         "status": "healthy", 
-        "bot": "Tarot Master 🔮"
+        "bot": "Tarot Master 🔮",
+        "version": "1.0",
+        "webhook_set": bot.get_webhook_info().url if bot else False
     })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    
+    # Если запускаем локально, запускаем polling
+    if os.environ.get('RENDER', None) is None and application:
+        # Локально используем polling
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    else:
+        # На Render запускаем Flask
+        app.run(host='0.0.0.0', port=port, debug=False)
