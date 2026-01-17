@@ -293,54 +293,11 @@ class TarotMasterBot:
         except Exception as e:
             logger.error(f"Error calling DeepSeek: {e}")
             return "🌀 Произошла ошибка. Попробуй еще раз."
-    
-    async def process_message(self, update, context):
-        """Обработка сообщений"""
-        try:
-            user_message = update.message.text
-            user_id = update.message.from_user.id
-            chat_id = update.message.chat_id
-            
-            if user_message == '/start':
-                self.send_welcome_message(chat_id)
-            elif user_message == '/tarot':
-                self.send_session_start(chat_id)
-            elif user_message == '/help':
-                help_text = """🔮 *Команды Таро-бота:*
-
-/start - Начало работы
-/tarot - Начать сессию Таро
-/help - Помощь
-
-💫 Просто напиши вопрос, и я помогу!"""
-                await context.bot.send_message(chat_id=chat_id, text=help_text, parse_mode='Markdown')
-            elif user_id in self.user_questions:
-                # Если есть активный вопрос, делаем расклад
-                spread_type = "past_present_future"  # простой расклад по умолчанию
-                self.perform_spread(chat_id, spread_type, user_message)
-                if user_id in self.user_questions:
-                    del self.user_questions[user_id]
-            else:
-                # Обычный разговор
-                response = self.get_deepseek_response(user_message, user_id)
-                await context.bot.send_message(chat_id=chat_id, text=response)
-                
-        except Exception as e:
-            logger.error(f"Error processing message: {e}")
-    
-    async def handle_callback(self, update, context):
-        """Обработка callback-ов"""
-        query = update.callback_query
-        await query.answer()
-        
-        if query.data == "start_session":
-            self.send_session_start(query.message.chat_id)
-            self.user_questions[query.from_user.id] = True
 
 # Инициализация бота
 if BOT_TOKEN:
-    from telegram import Bot
-    from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler
+    from telegram import Bot, Update
+    from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, CommandHandler
     
     # Создаем бота и приложение
     bot = Bot(token=BOT_TOKEN)
@@ -349,11 +306,7 @@ if BOT_TOKEN:
     # Инициализируем логику бота
     tarot_master = TarotMasterBot()
     
-    # Добавляем обработчики
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tarot_master.process_message))
-    application.add_handler(CallbackQueryHandler(tarot_master.handle_callback))
-    
-    # Команды
+    # Обработчики команд
     async def start_command(update, context):
         await tarot_master.send_welcome_message(update.message.chat_id)
     
@@ -371,14 +324,48 @@ if BOT_TOKEN:
 💫 Просто напиши вопрос, и я помогу!"""
         await context.bot.send_message(chat_id=update.message.chat_id, text=help_text, parse_mode='Markdown')
     
-    application.add_handler(MessageHandler(filters.Regex('^/start$'), start_command))
-    application.add_handler(MessageHandler(filters.Regex('^/tarot$'), tarot_command))
-    application.add_handler(MessageHandler(filters.Regex('^/help$'), help_command))
+    # Обработчик обычных сообщений
+    async def handle_message(update, context):
+        try:
+            user_message = update.message.text
+            user_id = update.message.from_user.id
+            chat_id = update.message.chat_id
+            
+            if user_id in tarot_master.user_questions:
+                # Если есть активный вопрос, делаем расклад
+                spread_type = "past_present_future"  # простой расклад по умолчанию
+                tarot_master.perform_spread(chat_id, spread_type, user_message)
+                if user_id in tarot_master.user_questions:
+                    del tarot_master.user_questions[user_id]
+            else:
+                # Обычный разговор
+                response = tarot_master.get_deepseek_response(user_message, user_id)
+                await context.bot.send_message(chat_id=chat_id, text=response)
+                
+        except Exception as e:
+            logger.error(f"Error processing message: {e}")
+    
+    # Обработчик callback-ов
+    async def handle_callback(update, context):
+        query = update.callback_query
+        await query.answer()
+        
+        if query.data == "start_session":
+            tarot_master.send_session_start(query.message.chat_id)
+            tarot_master.user_questions[query.from_user.id] = True
+    
+    # Добавляем обработчики в приложение
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("tarot", tarot_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(handle_callback))
     
     logger.info("✅ Bot initialized successfully")
 else:
     logger.warning("⚠️ BOT_TOKEN not set. Bot functionality disabled.")
 
+# Webhook endpoint
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.method == 'POST':
@@ -386,8 +373,10 @@ def webhook():
             if not application:
                 return jsonify({"error": "Bot not configured"}), 400
             
+            # Получаем обновление
+            update = Update.de_json(request.get_json(force=True), bot)
+            
             # Обрабатываем обновление
-            update = Update.de_json(request.get_json(force=True), application.bot)
             application.update_queue.put(update)
             
             return jsonify({"status": "success"}), 200
@@ -395,6 +384,76 @@ def webhook():
         except Exception as e:
             logger.error(f"Error in webhook: {e}")
             return jsonify({"status": "error", "message": str(e)}), 400
+
+# Установка webhook - ЭТОТ МАРШРУТ НУЖЕН!
+@app.route('/set_webhook', methods=['GET', 'POST'])
+def set_webhook():
+    """Установка webhook (вызовите этот URL после деплоя)"""
+    try:
+        if not bot:
+            return jsonify({"error": "Bot not configured"}), 400
+        
+        # Получаем URL из запроса или используем текущий URL
+        if request.method == 'POST':
+            data = request.get_json()
+            webhook_url = data.get('url', request.host_url + 'webhook')
+        else:
+            webhook_url = request.args.get('url', request.host_url + 'webhook')
+        
+        # Устанавливаем webhook
+        result = bot.set_webhook(url=webhook_url)
+        
+        # Получаем информацию о webhook
+        webhook_info = bot.get_webhook_info()
+        
+        return jsonify({
+            "success": result,
+            "webhook_url": webhook_info.url,
+            "has_custom_certificate": webhook_info.has_custom_certificate,
+            "pending_update_count": webhook_info.pending_update_count,
+            "ip_address": webhook_info.ip_address,
+            "last_error_date": str(webhook_info.last_error_date) if webhook_info.last_error_date else None,
+            "last_error_message": webhook_info.last_error_message,
+            "max_connections": webhook_info.max_connections,
+            "allowed_updates": webhook_info.allowed_updates
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+# Удаление webhook
+@app.route('/delete_webhook', methods=['GET'])
+def delete_webhook():
+    """Удаление webhook"""
+    try:
+        if not bot:
+            return jsonify({"error": "Bot not configured"}), 400
+        
+        result = bot.delete_webhook()
+        return jsonify({"success": result, "message": "Webhook deleted"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+# Информация о webhook
+@app.route('/webhook_info', methods=['GET'])
+def webhook_info():
+    """Получение информации о webhook"""
+    try:
+        if not bot:
+            return jsonify({"error": "Bot not configured"}), 400
+        
+        webhook_info = bot.get_webhook_info()
+        return jsonify({
+            "url": webhook_info.url,
+            "has_custom_certificate": webhook_info.has_custom_certificate,
+            "pending_update_count": webhook_info.pending_update_count,
+            "ip_address": webhook_info.ip_address,
+            "last_error_date": str(webhook_info.last_error_date) if webhook_info.last_error_date else None,
+            "last_error_message": webhook_info.last_error_message,
+            "max_connections": webhook_info.max_connections,
+            "allowed_updates": webhook_info.allowed_updates
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 @app.route('/yookassa-webhook', methods=['POST'])
 def yookassa_webhook():
@@ -419,39 +478,30 @@ def yookassa_webhook():
         logger.error(f"Yookassa webhook error: {e}")
         return jsonify({"status": "error"}), 400
 
-@app.route('/set_webhook', methods=['GET'])
-def set_webhook():
-    """Установка webhook (вызовите этот URL после деплоя)"""
-    try:
-        if not bot:
-            return "Bot not configured", 400
-        
-        # Получаем URL из запроса или используем Render URL
-        webhook_url = request.args.get('url', request.host_url + 'webhook')
-        
-        # Устанавливаем webhook
-        bot.set_webhook(url=webhook_url)
-        
-        return f"Webhook set to: {webhook_url}", 200
-    except Exception as e:
-        return f"Error: {e}", 400
-
 @app.route('/')
 def home():
+    webhook_info = None
+    if bot:
+        try:
+            webhook_info = bot.get_webhook_info()
+        except:
+            pass
+    
     return jsonify({
         "status": "healthy", 
         "bot": "Tarot Master 🔮",
         "version": "1.0",
-        "webhook_set": bot.get_webhook_info().url if bot else False
+        "webhook_set": webhook_info.url if webhook_info else False,
+        "endpoints": {
+            "home": "/",
+            "set_webhook": "/set_webhook",
+            "delete_webhook": "/delete_webhook", 
+            "webhook_info": "/webhook_info",
+            "webhook": "/webhook",
+            "yookassa_webhook": "/yookassa-webhook"
+        }
     })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    
-    # Если запускаем локально, запускаем polling
-    if os.environ.get('RENDER', None) is None and application:
-        # Локально используем polling
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
-    else:
-        # На Render запускаем Flask
-        app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False)
