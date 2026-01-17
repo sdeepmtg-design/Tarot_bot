@@ -1,93 +1,47 @@
 import random
 from datetime import datetime
-from typing import List, Dict
 
 class TarotUtils:
     @staticmethod
-    def format_spread_for_display(cards: List[Dict], spread_type: str) -> str:
-        spread_info = {
-            "past_present_future": ["📜 Прошлое", "🌀 Настоящее", "✨ Будущее"],
-            "relationship": ["❤️ Ваши чувства", "💙 Чувства партнера", "💞 Динамика", 
-                           "🚧 Препятствия", "🌱 Потенциал"],
-            "career": ["💼 Ситуация", "🧱 Препятствия", "🎯 Возможности", "💡 Рекомендации"],
-            "yes_no": ["⚡ Ответ"]
+    def get_card_emoji(card_name):
+        """Возвращает эмодзи для карты"""
+        emojis = {
+            "Маг": "⚡",
+            "Верховная Жрица": "🌙", 
+            "Императрица": "👑",
+            "Император": "👑",
+            "Иерофант": "📿",
+            "Влюбленные": "💖",
+            "Колесница": "🛡️",
+            "Сила": "💪",
+            "Отшельник": "🕯️",
+            "Колесо Фортуны": "🔄",
+            "Справедливость": "⚖️",
+            "Повешенный": "🙏",
+            "Смерть": "💀",
+            "Умеренность": "⚗️",
+            "Дьявол": "😈",
+            "Башня": "🏰",
+            "Звезда": "⭐",
+            "Луна": "🌙",
+            "Солнце": "☀️",
+            "Суд": "🎺",
+            "Мир": "🌍",
+            "Шут": "🃏"
         }
-        
-        positions = spread_info.get(spread_type, [f"{i+1}." for i in range(len(cards))])
-        
-        result = "🃏 *Карты расклада:*\n\n"
-        for pos, card in zip(positions, cards):
-            result += f"{pos}\n"
-            result += f"*{card['name']}*\n"
-            if card['reversed']:
-                result += "🔄 *Перевернута*\n"
-            result += f"_{card['meaning']}_\n\n"
-        
-        return result
+        return emojis.get(card_name, "🔮")
     
     @staticmethod
-    def generate_ritual_text() -> str:
-        rituals = [
-            "🌀 Зажигаю виртуальные свечи... Настраиваюсь на твою энергию...",
-            "🌙 Очищаю пространство кристаллами... Перемешиваю карты...",
-            "✨ Создаю священное пространство... Карты начинают говорить..."
-        ]
-        return random.choice(rituals)
-    
-    @staticmethod
-    def moon_phase_emoji() -> str:
-        day = datetime.now().day
-        if day <= 7:
-            return "🌑"
-        elif day <= 14:
-            return "🌓"
-        elif day <= 21:
-            return "🌕"
-        else:
-            return "🌗"
-
-class SubscriptionPlans:
-    PLANS = {
-        "week": {
-            "name": "Неделя",
-            "price": 299,
-            "days": 7,
-            "features": [
-                "✅ Все расклады до 5 карт",
-                "✅ Ежедневные инсайты",
-                "✅ История раскладов"
-            ]
-        },
-        "month": {
-            "name": "Месяц",
-            "price": 999,
-            "days": 30,
-            "features": [
-                "✅ ВСЕ расклады",
-                "✅ Персонализированные инсайты",
-                "✅ Расширенная история",
-                "✅ Личный дневник карт"
-            ]
-        }
-    }
-    
-    @classmethod
-    def get_plan_info(cls, plan_type: str) -> Dict:
-        return cls.PLANS.get(plan_type, {})
-    
-    @classmethod
-    def format_plan_for_display(cls, plan_type: str) -> str:
-        plan = cls.get_plan_info(plan_type)
-        if not plan:
-            return ""
+    def format_reading(question, card, interpretation):
+        """Форматирует расклад для отображения"""
+        emoji = TarotUtils.get_card_emoji(card['name'])
+        reversed_text = " (перевернута)" if card['reversed'] else ""
         
-        text = f"""💫 *{plan['name']} - {plan['price']}₽*
+        return f"""✨ *Расклад Таро*
 
-⏰ *Длительность:* {plan['days']} дней
+*Вопрос:* {question}
+*Карта:* {emoji} {card['name']}{reversed_text}
+*Значение:* {card['meaning']}
 
-*Включает:*
-"""
-        for feature in plan['features']:
-            text += f"{feature}\n"
-        
-        return text
+🔍 *Интерпретация:*
+{interpretation}"""

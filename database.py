@@ -1,177 +1,77 @@
 import os
 import json
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from datetime import datetime, timedelta
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///tarot_bot.db')
-if DATABASE_URL.startswith('postgres://'):
-    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-class UserSubscription(Base):
-    __tablename__ = "user_subscriptions"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, unique=True, index=True)
-    plan_type = Column(String)
-    activated_at = Column(DateTime, default=datetime.now)
-    expires_at = Column(DateTime)
-    payment_status = Column(String, default='pending')
-
-class UserMessageCount(Base):
-    __tablename__ = "user_message_counts"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, unique=True, index=True)
-    message_count = Column(Integer, default=0)
-
-class ConversationHistory(Base):
-    __tablename__ = "conversation_history"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, index=True)
-    role = Column(String)
-    content = Column(Text)
-    timestamp = Column(DateTime, default=datetime.now)
-
-class TarotReading(Base):
-    __tablename__ = "tarot_readings"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, index=True)
-    spread_type = Column(String)
-    question = Column(Text)
-    cards_drawn = Column(Text)
-    interpretation = Column(Text)
-    reading_date = Column(DateTime, default=datetime.now)
-
-Base.metadata.create_all(bind=engine)
-
-class DatabaseManager:
+# Простая in-memory база для старта
+class SimpleDB:
     def __init__(self):
-        self.db = SessionLocal()
+        self.users = {}
+        self.readings = {}
+        self.conversations = {}
     
-    def get_subscription(self, user_id):
+    def save_reading(self, user_id, question, card, interpretation):
+        """Сохраняет расклад"""
         try:
-            return self.db.query(UserSubscription).filter(
-                UserSubscription.user_id == str(user_id)
-            ).first()
+            reading_id = f"{user_id}_{datetime.now().timestamp()}"
+            self.readings[reading_id] = {
+                'user_id': user_id,
+                'question': question,
+                'card': card,
+                'interpretation': interpretation,
+                'timestamp': datetime.now().isoformat()
+            }
+            return reading_id
         except Exception as e:
-            logger.error(f"Error getting subscription: {e}")
+            logger.error(f"Error saving reading: {e}")
             return None
     
-    def update_subscription(self, user_id, plan_type, days):
+    def get_user_readings(self, user_id, limit=10):
+        """Получает расклады пользователя"""
         try:
-            old_sub = self.get_subscription(user_id)
-            if old_sub:
-                self.db.delete(old_sub)
-                self.db.commit()
+            user_readings = []
+            for reading_id, reading in self.readings.items():
+                if reading['user_id'] == user_id:
+                    user_readings.append(reading)
             
-            new_sub = UserSubscription(
-                user_id=str(user_id),
-                plan_type=plan_type,
-                expires_at=datetime.now() + timedelta(days=days),
-                payment_status='paid'
-            )
-            self.db.add(new_sub)
-            self.db.commit()
-            return new_sub
+            # Сортируем по времени (новые сначала)
+            user_readings.sort(key=lambda x: x['timestamp'], reverse=True)
+            return user_readings[:limit]
         except Exception as e:
-            logger.error(f"Error updating subscription: {e}")
-            self.db.rollback()
-            return None
-    
-    def get_message_count(self, user_id):
-        try:
-            count_obj = self.db.query(UserMessageCount).filter(
-                UserMessageCount.user_id == str(user_id)
-            ).first()
-            return count_obj.message_count if count_obj else 0
-        except Exception as e:
-            logger.error(f"Error getting message count: {e}")
-            return 0
-    
-    def update_message_count(self, user_id, count):
-        try:
-            count_obj = self.db.query(UserMessageCount).filter(
-                UserMessageCount.user_id == str(user_id)
-            ).first()
-            
-            if count_obj:
-                count_obj.message_count = count
-            else:
-                count_obj = UserMessageCount(
-                    user_id=str(user_id),
-                    message_count=count
-                )
-                self.db.add(count_obj)
-            
-            self.db.commit()
-            return count_obj
-        except Exception as e:
-            logger.error(f"Error updating message count: {e}")
-            self.db.rollback()
-            return None
+            logger.error(f"Error getting readings: {e}")
+            return []
     
     def save_conversation(self, user_id, role, content):
+        """Сохраняет сообщение в историю"""
         try:
-            history_count = self.db.query(ConversationHistory).filter(
-                ConversationHistory.user_id == str(user_id)
-            ).count()
+            if user_id not in self.conversations:
+                self.conversations[user_id] = []
             
-            if history_count >= 20:
-                oldest = self.db.query(ConversationHistory).filter(
-                    ConversationHistory.user_id == str(user_id)
-                ).order_by(ConversationHistory.timestamp.asc()).limit(history_count - 19).all()
-                for msg in oldest:
-                    self.db.delete(msg)
+            # Ограничиваем историю до 20 сообщений
+            if len(self.conversations[user_id]) >= 20:
+                self.conversations[user_id].pop(0)
             
-            conversation = ConversationHistory(
-                user_id=str(user_id),
-                role=role,
-                content=content
-            )
-            self.db.add(conversation)
-            self.db.commit()
+            self.conversations[user_id].append({
+                'role': role,
+                'content': content,
+                'timestamp': datetime.now().isoformat()
+            })
             return True
         except Exception as e:
             logger.error(f"Error saving conversation: {e}")
-            self.db.rollback()
             return False
     
-    def get_conversation_history(self, user_id, limit=20):
+    def get_conversation_history(self, user_id, limit=10):
+        """Получает историю разговоров"""
         try:
-            messages = self.db.query(ConversationHistory).filter(
-                ConversationHistory.user_id == str(user_id)
-            ).order_by(ConversationHistory.timestamp.asc()).limit(limit).all()
-            
-            return [
-                {"role": msg.role, "content": msg.content, "timestamp": msg.timestamp}
-                for msg in messages
-            ]
+            if user_id in self.conversations:
+                return self.conversations[user_id][-limit:]
+            return []
         except Exception as e:
             logger.error(f"Error getting conversation history: {e}")
             return []
-    
-    def save_tarot_reading(self, user_id, spread_type, question, cards, interpretation):
-        try:
-            reading = TarotReading(
-                user_id=str(user_id),
-                spread_type=spread_type,
-                question=question,
-                cards_drawn=json.dumps(cards),
-                interpretation=interpretation
-            )
-            self.db.add(reading)
-            self.db.commit()
-            return reading.id
-        except Exception as e:
-            logger.error(f"Error saving tarot reading: {e}")
-            self.db.rollback()
-            return None
 
-db_manager = DatabaseManager()
+# Глобальная база данных
+db = SimpleDB()
