@@ -5,7 +5,7 @@ import logging
 import random
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -15,127 +15,140 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не установлен!")
 
-# Хранилища
+# Глобальные хранилища
 conversations = {}
-used_responses = {}
-typing_status = {}  # Для отслеживания статуса "печатает"
+user_first_messages = {}
+message_history = {}
+last_message_time = {}
 
 def show_typing(chat_id, duration=None):
-    """Показывает статус 'печатает' в чате"""
+    """Показывает статус 'печатает'"""
     if duration is None:
-        duration = random.uniform(2.0, 5.0)  # Показываем печать 2-5 секунд
+        duration = random.uniform(2.0, 4.0)
     
     def typing_action():
         try:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendChatAction"
-            payload = {
-                'chat_id': chat_id,
-                'action': 'typing'
-            }
-            response = requests.post(url, json=payload, timeout=5)
+            payload = {'chat_id': chat_id, 'action': 'typing'}
+            requests.post(url, json=payload, timeout=5)
             time.sleep(duration)
-            return response.status_code == 200
-        except Exception:
-            return False
+        except:
+            pass
     
-    thread = threading.Thread(target=typing_action)
-    thread.daemon = True
-    thread.start()
-    return thread
+    threading.Thread(target=typing_action, daemon=True).start()
 
 def get_human_delay():
-    """Возвращает задержку от 1 до 3 минут (60-180 секунд)"""
-    return random.randint(60, 180)  # 1-3 минуты
+    """Задержка 60-180 секунд (1-3 минуты)"""
+    return random.randint(60, 180)
 
-def send_message_with_human_timing(chat_id, text, is_fast_mode=False):
-    """Отправляет сообщение с человеческими задержками и статусом печати"""
-    def send_sequence():
-        # 1. Показываем "печатает" перед задержкой
-        show_typing(chat_id, duration=random.uniform(3.0, 8.0))
+def send_message_with_delay(chat_id, text, delay_override=None):
+    """Отправляет сообщение с задержкой"""
+    def send():
+        if delay_override:
+            delay = delay_override
+        else:
+            delay = get_human_delay()
         
-        # 2. Основная задержка 1-3 минуты
-        delay = get_human_delay() if not is_fast_mode else random.randint(30, 90)  # 30-90 сек в быстром режиме
-        logger.info(f"⏰ Задержка: {delay} сек перед ответом")
+        logger.info(f"⏰ Задержка: {delay} сек")
         time.sleep(delay)
         
-        # 3. Снова показываем "печатает" перед отправкой
-        show_typing(chat_id, duration=random.uniform(1.5, 4.0))
-        time.sleep(random.uniform(1.5, 4.0))
+        show_typing(chat_id, duration=random.uniform(1.5, 3.0))
+        time.sleep(random.uniform(1.5, 3.0))
         
-        # 4. Отправляем сообщение
         try:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            payload = {
-                'chat_id': chat_id,
-                'text': text,
-                'parse_mode': 'Markdown'
-            }
-            response = requests.post(url, json=payload, timeout=10)
-            if response.status_code != 200:
-                logger.error(f"Ошибка отправки: {response.text}")
+            payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
+            requests.post(url, json=payload, timeout=10)
         except Exception as e:
-            logger.error(f"Ошибка: {e}")
+            logger.error(f"Ошибка отправки: {e}")
     
-    thread = threading.Thread(target=send_sequence)
-    thread.daemon = True
-    thread.start()
-    return thread
+    threading.Thread(target=send, daemon=True).start()
 
-def send_multiple_messages(chat_id, messages, is_fast_mode=False):
-    """Отправляет несколько сообщений с паузами и статусом печати"""
+def send_multiple_messages(chat_id, messages):
+    """Отправляет несколько сообщений с паузами"""
     def send_sequence():
         for i, msg in enumerate(messages):
             if i > 0:
-                # Пауза между сообщениями с показом печати
-                pause = random.randint(10, 30)  # 10-30 сек между сообщениями
-                logger.info(f"⏸️ Пауза между сообщениями: {pause} сек")
+                pause = random.randint(10, 25)
                 time.sleep(pause)
             
-            # Показываем печать перед каждым сообщением
-            show_typing(chat_id, duration=random.uniform(2.0, 5.0))
-            time.sleep(random.uniform(2.0, 5.0))
+            show_typing(chat_id, duration=random.uniform(1.5, 3.0))
+            time.sleep(random.uniform(1.5, 3.0))
             
-            # Отправляем сообщение
             try:
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                payload = {
-                    'chat_id': chat_id,
-                    'text': msg,
-                    'parse_mode': 'Markdown'
-                }
+                payload = {'chat_id': chat_id, 'text': msg, 'parse_mode': 'Markdown'}
                 requests.post(url, json=payload, timeout=10)
-            except Exception:
+            except:
                 pass
     
-    thread = threading.Thread(target=send_sequence)
-    thread.daemon = True
-    thread.start()
-    return thread
+    threading.Thread(target=send_sequence, daemon=True).start()
 
-def get_unique_response(responses, chat_id, response_type):
+def is_first_message(chat_id, message_text):
+    """Проверяет, первое ли это сообщение от пользователя"""
+    if chat_id not in user_first_messages:
+        user_first_messages[chat_id] = {
+            'first_message': message_text,
+            'received_at': time.time(),
+            'processed': False
+        }
+        return True
+    return False
+
+def mark_first_message_processed(chat_id):
+    """Отмечает первое сообщение как обработанное"""
+    if chat_id in user_first_messages:
+        user_first_messages[chat_id]['processed'] = True
+
+def get_conversation_state(chat_id):
+    """Получает или создает состояние диалога"""
+    if chat_id not in conversations:
+        conversations[chat_id] = {
+            'stage': 'problem_received',  # Начинаем сразу с получения проблемы
+            'user_name': '',
+            'problem': '',
+            'trust_level': 0,
+            'message_count': 0,
+            'last_message_time': time.time(),
+            'payment_offered': False,
+            'payment_link_sent': False,
+            'waiting_for_payment': False,
+            'last_responses': [],
+            'conversation_start': time.time(),
+            'greeted': False  # Флаг, что уже поздоровались
+        }
+    
+    conversations[chat_id]['last_message_time'] = time.time()
+    conversations[chat_id]['message_count'] += 1
+    
+    return conversations[chat_id]
+
+def get_unique_response(responses, chat_id, used_responses_key='general'):
     """Возвращает уникальный ответ"""
-    if chat_id not in used_responses:
-        used_responses[chat_id] = {}
+    if chat_id not in message_history:
+        message_history[chat_id] = {}
     
-    if response_type not in used_responses[chat_id]:
-        used_responses[chat_id][response_type] = []
+    if used_responses_key not in message_history[chat_id]:
+        message_history[chat_id][used_responses_key] = []
     
-    available = [r for r in responses if r not in used_responses[chat_id][response_type]]
+    # Ищем неиспользованные ответы
+    unused = [r for r in responses if r not in message_history[chat_id][used_responses_key]]
     
-    if not available:
-        used_responses[chat_id][response_type] = []
-        available = responses
+    if unused:
+        response = random.choice(unused)
+    else:
+        # Если все использовались, берем любой
+        response = random.choice(responses)
     
-    chosen = random.choice(available)
-    used_responses[chat_id][response_type].append(chosen)
+    # Сохраняем в историю (максимум 10 последних)
+    message_history[chat_id][used_responses_key].append(response)
+    if len(message_history[chat_id][used_responses_key]) > 10:
+        message_history[chat_id][used_responses_key] = message_history[chat_id][used_responses_key][-10:]
     
-    if len(used_responses[chat_id][response_type]) > 4:
-        used_responses[chat_id][response_type] = used_responses[chat_id][response_type][-4:]
-    
-    return chosen
+    return response
 
-def format_naturally(text, is_fast=False):
-    """Форматирует текст для естественности"""
+def format_message(text, is_fast=False):
+    """Форматирует сообщение естественно"""
     if is_fast and len(text) < 100:
         if random.random() < 0.7:
             text = text[0].lower() + text[1:] if text else text
@@ -143,226 +156,240 @@ def format_naturally(text, is_fast=False):
         if random.random() < 0.5 and text.endswith('.'):
             text = text[:-1]
     
+    # Убираем запятую перед "что"
     if random.random() < 0.4 and ", что" in text:
         text = text.replace(", что", " что")
     
+    # Случайный сленг
     if random.random() < 0.15:
-        slang = {
-            'понимаю': ['понимаю', 'ясно', 'чувствую', 'врубаюсь'][random.randint(0, 3)],
-            'конечно': ['конечно', 'разумеется', 'естессно'][random.randint(0, 2)],
-            'спасибо': ['спасибо', 'спс', 'благодарю'][random.randint(0, 2)]
+        replacements = {
+            'понимаю': ['понимаю', 'ясно', 'чувствую'][random.randint(0, 2)],
+            'спасибо': ['спасибо', 'спс'][random.randint(0, 1)],
+            'конечно': ['конечно', 'разумеется'][random.randint(0, 1)]
         }
         
-        for formal, informal in slang.items():
+        for formal, informal in replacements.items():
             if formal in text.lower():
                 text = text.replace(formal, informal)
                 break
     
     return text
 
-def get_conversation_state(chat_id, user_name):
-    """Получает состояние диалога"""
-    if chat_id not in conversations:
-        conversations[chat_id] = {
-            'stage': 'greeting',
-            'user_name': user_name,
-            'problem': '',
-            'trust_level': 0,
-            'last_interaction': time.time(),
-            'message_count': 0,
-            'fast_mode': False,
-            'payment_offered': False,
-            'payment_link_sent': False,
-            'waiting_for_payment': False,
-            'conversation_start': time.time()
-        }
+def is_problem_message(message):
+    """Определяет, является ли сообщение описанием проблемы"""
+    message_lower = message.lower()
     
-    conversations[chat_id]['last_interaction'] = time.time()
-    conversations[chat_id]['message_count'] += 1
+    # Признаки проблемы
+    problem_keywords = ['не могу', 'не знаю', 'проблем', 'ситуац', 'трудност', 'сложност', 
+                       'боюсь', 'страшно', 'волнуюсь', 'переживаю', 'хочу понять', 
+                       'как быть', 'что делать', 'помогите', 'совет', 'мне нужн', 'у меня']
     
-    # Определяем быстрый режим (отвечают быстрее 2 минут)
-    current_time = time.time()
-    if 'last_message_time' in conversations[chat_id]:
-        time_diff = current_time - conversations[chat_id]['last_message_time']
-        conversations[chat_id]['fast_mode'] = time_diff < 120  # 2 минуты
+    # Минимальная длина для проблемы
+    if len(message) < 15:
+        return False
     
-    conversations[chat_id]['last_message_time'] = current_time
-    conversations[chat_id]['user_name'] = user_name  # Обновляем имя
+    # Проверяем наличие ключевых слов
+    for keyword in problem_keywords:
+        if keyword in message_lower:
+            return True
     
-    return conversations[chat_id]
+    # Проверяем вопросительные предложения
+    if '?' in message and len(message) > 20:
+        return True
+    
+    return False
 
-def generate_response(user_message, chat_id, user_name):
-    """Генерирует ответ на основе диалога"""
-    state = get_conversation_state(chat_id, user_name)
-    user_msg_lower = user_message.lower()
-    stage = state['stage']
-    name = state['user_name']
-    is_fast = state['fast_mode']
+def analyze_problem_type(message):
+    """Анализирует тип проблемы"""
+    message_lower = message.lower()
     
-    logger.info(f"💬 Стадия: {stage}, Сообщений: {state['message_count']}, Быстрый: {is_fast}")
+    if any(word in message_lower for word in ['работ', 'карьер', 'начальник', 'коллег', 'зарплат', 'офис']):
+        return 'работа'
+    elif any(word in message_lower for word in ['отношен', 'любов', 'муж', 'жена', 'парень', 'девушка', 'семь', 'брак']):
+        return 'отношения'
+    elif any(word in message_lower for word in ['деньг', 'финанс', 'долг', 'кредит', 'заработ', 'бизнес']):
+        return 'деньги'
+    elif any(word in message_lower for word in ['здоров', 'болезн', 'боль', 'врач', 'лечен', 'энерг']):
+        return 'здоровье'
+    elif any(word in message_lower for word in ['выбор', 'решен', 'не знаю как', 'сомнен', 'не уверен']):
+        return 'выбор'
+    else:
+        return 'общая'
+
+def generate_problem_response(problem_text, user_name, state):
+    """Генерирует ответ на проблему"""
+    problem_type = analyze_problem_type(problem_text)
+    state['problem'] = problem_text
+    state['problem_type'] = problem_type
     
-    # Показываем печать сразу при получении сообщения
-    show_typing(chat_id)
-    
-    # 1. ПРИВЕТСТВИЕ
-    if stage == 'greeting':
-        state['stage'] = 'listening'
-        
-        greetings = [
-            f"привет, {name} ✨\nкак твое настроение сегодня",
-            f"здравствуй, {name}\nчувствую, ты пришел не просто так",
-            f"о, {name}, приветствую\nчто-то важное на душе",
-            f"привет, {name}\nкак дела? что привело тебя сюда",
-            f"{name}, здравствуй\nчувствую легкое волнение от тебя"
+    # Эмпатичные ответы на разные типы проблем
+    empathy_by_type = {
+        'работа': [
+            f"понимаю, {user_name}... рабочие вопросы часто бывают очень заряженными\nчувствую напряжение в твоих словах",
+            f"{user_name}, работа действительно может выматывать\nособенно когда там сложные отношения или задачи"
+        ],
+        'отношения': [
+            f"ой, {user_name}... отношения всегда затрагивают самые глубокие струны души\nчувствую, как это важно для тебя",
+            f"{user_name}, сердечные вопросы... они всегда такие хрупкие и значимые\nспасибо, что делишься этим"
+        ],
+        'деньги': [
+            f"{user_name}, денежные темы часто связаны с безопасностью и свободой\nпонимаю твою озабоченность",
+            f"чувствую, {user_name}, как финансы влияют на твоё состояние\nэто действительно важно"
+        ],
+        'здоровье': [
+            f"{user_name}, здоровье - основа всего\nчувствую твою заботу о себе, это прекрасно",
+            f"понимаю, {user_name}\nкогда тело или энергия дают сбой - это сигнал для внимания"
+        ],
+        'выбор': [
+            f"{user_name}, стоять на распутье... это всегда непросто\nчувствую твои сомнения",
+            f"{user_name}, моменты выбора часто определяют многое\nпонимаю важность этого для тебя"
+        ],
+        'общая': [
+            f"слышу тебя, {user_name}\nчувствую, как это беспокоит тебя",
+            f"{user_name}, понимаю\nтакое бывает, когда ситуация кажется безвыходной"
         ]
-        
-        response = get_unique_response(greetings, chat_id, 'greeting')
-        return [format_naturally(response, is_fast)]
+    }
     
-    # 2. СЛУШАНИЕ
-    elif stage == 'listening':
-        if len(user_message) > 10:
-            state['problem'] = user_message
-            state['stage'] = 'empathy'
-            state['trust_level'] += 1
-            
-            empathy = [
-                f"ой, {name}... слышу, как это непросто\nдержи, я с тобой",
-                f"понимаю, {name}\nтакое действительно выматывает\n\nне торопись, я слушаю",
-                f"мм, да... {name}\nчувствую тяжесть этого\n\nможно дышать глубже, я рядом",
-                f"слышу тебя, {name}\nэто важно - делиться таким\n\nспасибо за доверие"
-            ]
-            
-            response1 = get_unique_response(empathy, chat_id, 'empathy')
-            
-            follow_ups = [
-                "расскажи еще, если хочется\nчто в этом самое болезненное",
-                "а что твое сердце чувствует в этой ситуации",
-                "как долго это с тобой, {name}",
-                "что бы хотелось изменить в первую очередь"
-            ]
-            
-            response2 = random.choice(follow_ups).format(name=name)
-            
-            return [
-                format_naturally(response1, is_fast),
-                format_naturally(response2, is_fast)
-            ]
-        else:
-            return [format_naturally("расскажи чуть подробнее, если готов\nя действительно слушаю", is_fast)]
+    empathy = get_unique_response(empathy_by_type[problem_type], state.get('chat_id'), 'empathy')
     
-    # 3. ЭМПАТИЯ
-    elif stage == 'empathy':
-        state['stage'] = 'wisdom'
+    # Вопросы для углубления
+    deepening_questions = {
+        'работа': [
+            "а что самое сложное в этой рабочей ситуации",
+            "как это влияет на твоё состояние каждый день",
+            "что бы ты хотел изменить в первую очередь"
+        ],
+        'отношения': [
+            "а что твоё сердце чувствует в этой ситуации",
+            "чего не хватает в этих отношениях для счастья",
+            "что самое болезненное в этом"
+        ],
+        'деньги': [
+            "как эта финансовая ситуация влияет на твою свободу",
+            "что бы изменилось, если бы деньги перестали быть проблемой",
+            "чего ты боишься больше всего в этом"
+        ],
+        'здоровье': [
+            "как это влияет на твою повседневную жизнь",
+            "что говорит тебе твое тело через эту ситуацию",
+            "какой поддержки тебе не хватает"
+        ],
+        'выбор': [
+            "а что подсказывает твоя интуиция",
+            "чего ты боишься в каждом из вариантов",
+            "какой выбор сделало бы твое сердце, если бы не было страха"
+        ],
+        'общая': [
+            "а что самое тяжелое в этом для тебя",
+            "как долго это с тобой",
+            "что бы хотелось изменить в первую очередь"
+        ]
+    }
+    
+    question = get_unique_response(deepening_questions[problem_type], state.get('chat_id'), 'questions')
+    
+    return [
+        format_message(empathy, False),
+        format_message(question, False)
+    ]
+
+def generate_followup_response(user_message, user_name, state):
+    """Генерирует ответ на продолжение диалога"""
+    message_lower = user_message.lower()
+    stage = state['stage']
+    
+    # Если пользователь отвечает на вопрос о проблеме
+    if stage == 'problem_received':
+        state['stage'] = 'offering_help'
         state['trust_level'] += 1
         
-        wisdom = [
-            f"интересно, {name}...\nа если бы страх отпустил\nчто бы ты сделал первым делом",
-            f"знаешь, {name}\nиногда такие ситуации - как зеркало\n\nчто это зеркало показывает тебе",
-            f"чувствую, {name}\nздесь есть что-то важное для твоего пути\n\nчто это может быть",
-            f"{name}, а что если это не проблема\nа возможность увидеть что-то новое в себе"
+        # Предложение помощи
+        offerings = [
+            f"{user_name}, чувствую, что здесь есть что исследовать\n\nкарты таро могут помочь увидеть то, что не очевидно",
+            f"понимаю, {user_name}\n\nиногда полезно посмотреть на ситуацию через призму символов\nкарты могут дать неожиданные подсказки",
+            f"{user_name}, у меня есть чувство\nчто в этой ситуации скрыты важные уроки\n\nхотите, чтобы я сделала расклад и помогла их увидеть"
         ]
         
-        response = get_unique_response(wisdom, chat_id, 'wisdom')
-        return [format_naturally(response, is_fast)]
-    
-    # 4. МУДРОСТЬ
-    elif stage == 'wisdom':
-        state['stage'] = 'offering_help'
-        
-        offering = [
-            f"{name}, иногда нам нужен другой взгляд\nчтобы увидеть то, что скрыто\n\nкарты таро могут стать таким проводником",
-            f"знаешь, я часто вижу\nкак карты помогают найти ответы внутри себя\n\nхочешь попробовать такой диалог",
-            f"{name}, у меня есть чувство\nчто здесь есть важные подсказки для тебя\n\nкарты могут помочь их расшифровать",
-            f"иногда полезно посмотреть на ситуацию\nчерез призму символов и образов\n\n{name}, интересно тебе такое исследование"
-        ]
-        
-        response1 = get_unique_response(offering, chat_id, 'offering')
-        response2 = "это не гадание, а разговор с собой\nчерез язык карт и интуиции"
+        offering = get_unique_response(offerings, state.get('chat_id'), 'offering')
         
         return [
-            format_naturally(response1, is_fast),
-            format_naturally(response2, is_fast)
+            format_message("мм, понимаю...", False),
+            format_message(offering, False),
+            format_message("это не гадание, а глубокий анализ ситуации\nчерез язык карт и интуиции", False)
         ]
     
-    # 5. ПРЕДЛОЖЕНИЕ ПОМОЩИ
+    # Если предлагаем помощь
     elif stage == 'offering_help':
-        positive = ['да', 'хочу', 'готов', 'соглас', 'интересно', 'можно', 'попробую', 'почему нет', 'давай', 'расскажи']
+        positive_words = ['да', 'хочу', 'готов', 'соглас', 'интересно', 'можно', 'попробую', 'почему нет', 'давай']
         
-        if any(word in user_msg_lower for word in positive):
+        if any(word in message_lower for word in positive_words):
             state['stage'] = 'discussing_value'
             state['payment_offered'] = True
             
-            value = [
-                f"хорошо, {name} 💫\nтогда я создам для тебя персональный расклад",
-                "буду работать с твоей ситуацией очень внимательно",
-                f"стоимость - 1490 рублей\nно для тебя, {name}, сделаю за 990",
-                "это не просто оплата\nа энергообмен и твоя готовность к изменениям"
+            return [
+                format_message(f"хорошо, {user_name} 💫", False),
+                format_message("тогда я создам для тебя персональный расклад", False),
+                format_message("буду работать с твоей ситуацией очень внимательно", False),
+                format_message("стоимость - 1490 рублей\nно для тебя, {user_name}, сделаю за 990".format(user_name=user_name), False),
+                format_message("это не просто оплата\nа энергообмен и твоя готовность к изменениям", False)
             ]
-            
-            return [format_naturally(r, is_fast) for r in value]
         else:
+            # Если ещё не готов
+            state['stage'] = 'understanding_doubt'
+            
             comfort = [
-                f"всё в твоем ритме, {name}\nне торопись с решением",
-                f"посиди с этим ощущением, {name}\nоно тебе что-то говорит",
-                f"как думаешь, {name}\nчего не хватает для принятия решения"
+                f"всё в твоем ритме, {user_name}",
+                "не торопись с решением",
+                f"посиди с этим ощущением, {user_name}\nоно тебе что-то говорит"
             ]
             
-            response = get_unique_response(comfort, chat_id, 'comfort')
-            return [format_naturally(response, is_fast)]
+            response = get_unique_response(comfort, state.get('chat_id'), 'comfort')
+            return [format_message(response, False)]
     
-    # 6. ОБСУЖДЕНИЕ ЦЕННОСТИ
+    # Если обсуждаем ценность
     elif stage == 'discussing_value':
-        if 'сколько' in user_msg_lower or 'цена' in user_msg_lower or 'стоимость' in user_msg_lower or '990' in user_msg_lower:
+        if 'сколько' in message_lower or 'цена' in message_lower or 'стоимость' in message_lower or '990' in message_lower:
             state['stage'] = 'asking_readiness'
             
             readiness = [
-                f"{name}, как тебе такая инвестиция в себя\n990 рублей за ясность и новые перспективы",
-                f"чувствую, это доступная сумма для важного шага\n{name}, ты так не считаешь",
-                f"{name}, это меньше, чем многие тратят на то, что не приносит счастья\nа здесь - инвестиция в твой покой"
+                f"{user_name}, как тебе такая инвестиция в себя\n990 рублей за ясность и новые перспективы",
+                f"чувствую, это доступная сумма для важного шага\n{user_name}, ты так не считаешь"
             ]
             
-            response = get_unique_response(readiness, chat_id, 'readiness')
-            return [format_naturally(response, is_fast)]
+            response = get_unique_response(readiness, state.get('chat_id'), 'readiness')
+            return [format_message(response, False)]
         
-        elif 'готов' in user_msg_lower or 'куплю' in user_msg_lower or 'оплат' in user_msg_lower:
+        elif 'готов' in message_lower or 'куплю' in message_lower or 'оплат' in message_lower:
             state['stage'] = 'sending_link'
             
-            pre_link = [
-                f"чувствую твою решимость, {name} ✨\nэто вдохновляет",
-                "момент выбора всегда особенный",
-                f"{name}, сейчас произойдет что-то важное\nмежду нами и для тебя"
+            return [
+                format_message(f"чувствую твою решимость, {user_name} ✨", False),
+                format_message("этот шаг изменит многое для тебя", False)
             ]
-            
-            return [format_naturally(r, is_fast) for r in pre_link]
         
         else:
             state['stage'] = 'asking_readiness'
-            return [format_naturally(f"{name}, готов сделать этот шаг к ясности", is_fast)]
+            return [format_message(f"{user_name}, готов сделать этот шаг к ясности", False)]
     
-    # 7. ПРОВЕРКА ГОТОВНОСТИ
+    # Если спрашиваем о готовности
     elif stage == 'asking_readiness':
-        if any(word in user_msg_lower for word in ['готов', 'давай', 'хочу', 'куплю', 'оплат']):
+        if any(word in message_lower for word in ['готов', 'давай', 'хочу', 'куплю', 'оплат']):
             state['stage'] = 'sending_link'
             state['waiting_for_payment'] = True
             
-            confirm = [
-                f"отлично, {name} 🌟",
-                "чувствую, как энергия двигается",
-                "этот шаг изменит многое для тебя"
+            return [
+                format_message(f"отлично, {user_name} 🌟", False),
+                format_message("чувствую, как энергия двигается", False)
             ]
-            
-            return [format_naturally(r, is_fast) for r in confirm]
         
         else:
-            return [format_naturally(f"{name}, всё в твоем темпе\nпросто скажи, когда будешь готов", is_fast)]
+            return [format_message(f"{user_name}, всё в твоем темпе\nпросто скажи, когда будешь готов", False)]
     
-    # 8. ОТПРАВКА ССЫЛКИ
+    # Если отправляем ссылку
     elif stage == 'sending_link' and not state['payment_link_sent']:
         state['payment_link_sent'] = True
         state['stage'] = 'awaiting_payment'
         
-        # Важно: сначала предварительное сообщение, потом ссылка
         payment_url = "https://yoomoney.ru/to/4100111234567890"  # ЗАМЕНИТЕ!
         
         return [
@@ -370,20 +397,18 @@ def generate_response(user_message, chat_id, user_name):
             payment_url
         ]
     
-    # 9. ОЖИДАНИЕ ОПЛАТЫ
+    # Если ожидаем оплату
     elif stage == 'awaiting_payment':
-        if 'оплат' in user_msg_lower or 'перевел' in user_msg_lower or 'сделал' in user_msg_lower or 'оплатил' in user_msg_lower:
+        if 'оплат' in message_lower or 'перевел' in message_lower or 'сделал' in message_lower or 'оплатил' in message_lower:
             state['stage'] = 'working'
             state['waiting_for_payment'] = False
             
-            gratitude = [
-                f"благодарю, {name} 🙏\nэнергия пошла",
-                "чувствую твое доверие\nэто ценно",
-                "начинаю работать с картами\nдля твоего расклада",
-                "займет немного времени\nно оно того стоит\n\nотдохни, скоро вернусь с ответами"
+            return [
+                format_message(f"благодарю, {user_name} 🙏", False),
+                format_message("энергия пошла", False),
+                format_message("начинаю работать с картами\nдля твоего расклада", False),
+                format_message("займет немного времени\nно оно того стоит\n\nотдохни, скоро вернусь с ответами", False)
             ]
-            
-            return [format_naturally(r, is_fast) for r in gratitude]
         
         elif not state['payment_link_sent']:
             state['stage'] = 'sending_link'
@@ -391,33 +416,77 @@ def generate_response(user_message, chat_id, user_name):
         
         else:
             reminders = [
-                f"я здесь, {name}\nжду, когда будешь готов",
-                "всё в твоем ритме\nссылка ждет тебя",
-                f"{name}, помни - это шаг к ясности\nкогда захочешь - оплати"
+                f"я здесь, {user_name}\nжду, когда будешь готов",
+                "всё в твоем ритме\nссылка ждет тебя"
             ]
             
-            response = get_unique_response(reminders, chat_id, 'reminders')
-            return [format_naturally(response, is_fast)]
+            response = get_unique_response(reminders, state.get('chat_id'), 'reminders')
+            return [format_message(response, False)]
     
-    # 10. РАБОТА
+    # Если работаем над раскладом
     elif stage == 'working':
         updates = [
             "карты уже говорят...\nчто-то важное про твой путь",
             "вижу интересные связи\nто, что было скрыто",
-            f"{name}, это глубже, чем кажется\nи прекраснее тоже",
-            "почти готово\nсобираю для тебя ответы\nв целостную картину"
+            f"{user_name}, это глубже, чем кажется\nи прекраснее тоже"
         ]
         
-        response = get_unique_response(updates, chat_id, 'updates')
-        return [format_naturally(response, is_fast)]
+        response = get_unique_response(updates, state.get('chat_id'), 'updates')
+        return [format_message(response, False)]
     
-    # Запасной
-    state['stage'] = 'listening'
-    return [format_naturally(f"{name}, расскажи, что на душе прямо сейчас", is_fast)]
+    # Если понимаем сомнения
+    elif stage == 'understanding_doubt':
+        if any(word in message_lower for word in ['не уверен', 'сомневаюсь', 'страшно', 'боюсь', 'не верю', 'подумаю', 'позже']):
+            state['stage'] = 'offering_help'  # Возвращаем к предложению
+            
+            encouragement = [
+                f"{user_name}, страх - это нормально\nно он часто скрывает самые важные возможности",
+                f"понимаю сомнения\nно что если это именно тот шаг, который нужен тебе сейчас",
+                f"{user_name}, доверься своему внутреннему чувству\nоно знает, что для тебя лучше"
+            ]
+            
+            response = get_unique_response(encouragement, state.get('chat_id'), 'encouragement')
+            return [format_message(response, False)]
+        
+        else:
+            state['stage'] = 'offering_help'
+            return [format_message("хочешь попробовать взглянуть на ситуацию по-новому?", False)]
+    
+    # По умолчанию возвращаем к проблеме
+    state['stage'] = 'problem_received'
+    return [format_message("расскажи, что происходит", False)]
+
+def process_user_message(chat_id, user_name, message_text):
+    """Обрабатывает сообщение пользователя"""
+    state = get_conversation_state(chat_id)
+    state['user_name'] = user_name
+    
+    # Если это первое сообщение и оно похоже на проблему
+    if is_first_message(chat_id, message_text) and not user_first_messages[chat_id]['processed']:
+        if is_problem_message(message_text):
+            # Обрабатываем как проблему сразу
+            mark_first_message_processed(chat_id)
+            responses = generate_problem_response(message_text, user_name, state)
+            return responses
+        else:
+            # Если не проблема, все равно начинаем диалог
+            mark_first_message_processed(chat_id)
+            state['greeted'] = True
+            return [format_message(f"привет, {user_name}\nрасскажи, что на душе", False)]
+    
+    # Обычная обработка
+    if is_problem_message(message_text) and state['stage'] == 'problem_received':
+        # Если прислали проблему на этапе получения проблемы
+        responses = generate_problem_response(message_text, user_name, state)
+    else:
+        # Продолжаем диалог
+        responses = generate_followup_response(message_text, user_name, state)
+    
+    return responses
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Основной webhook"""
+    """Основной webhook - обрабатывает ВСЕ сообщения, включая /start"""
     try:
         data = request.get_json()
         if not data:
@@ -430,27 +499,32 @@ def webhook():
             
             logger.info(f"👤 {user_name}: {message_text}")
             
-            # Показываем "печатает" сразу
+            # Показываем печать сразу
             show_typing(chat_id)
             
-            # Обработка /start
+            # Обрабатываем ЛЮБОЕ сообщение, включая /start
+            # Если пришло /start - игнорируем команду, начинаем диалог
             if message_text.lower() == '/start':
+                # Сбрасываем состояние для нового диалога
                 if chat_id in conversations:
                     del conversations[chat_id]
-                if chat_id in used_responses:
-                    del used_responses[chat_id]
+                if chat_id in message_history:
+                    del message_history[chat_id]
+                if chat_id in user_first_messages:
+                    del user_first_messages[chat_id]
+                
+                # Начинаем диалог с приветствия
+                responses = [format_message(f"привет, {user_name} ✨\nрасскажи, что привело тебя сегодня", False)]
+            else:
+                # Обрабатываем обычное сообщение
+                responses = process_user_message(chat_id, user_name, message_text)
             
-            # Генерируем ответ
-            responses = generate_response(message_text, chat_id, user_name)
-            
-            # Отправляем с человеческими задержками
+            # Отправляем ответы
             if responses:
                 if len(responses) == 1:
-                    send_message_with_human_timing(chat_id, responses[0], 
-                        conversations.get(chat_id, {}).get('fast_mode', False))
+                    send_message_with_delay(chat_id, responses[0])
                 else:
-                    send_multiple_messages(chat_id, responses, 
-                        conversations.get(chat_id, {}).get('fast_mode', False))
+                    send_multiple_messages(chat_id, responses)
             
             return jsonify({"status": "success"}), 200
         
@@ -479,43 +553,23 @@ def set_webhook():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
-@app.route('/stats', methods=['GET'])
-def stats():
-    """Статистика бота"""
-    active_chats = len(conversations)
-    total_messages = sum(state.get('message_count', 0) for state in conversations.values())
-    
-    return jsonify({
-        "status": "active",
-        "bot": "@Tarotyour_bot",
-        "description": "Эмпатичный проводник с задержками 1-3 минуты",
-        "active_chats": active_chats,
-        "total_messages": total_messages,
-        "features": [
-            "Задержки 60-180 секунд",
-            "Индикатор 'печатает'",
-            "Уникальные неповторяющиеся ответы",
-            "Четкая воронка до оплаты"
-        ],
-        "timing": {
-            "min_delay": "60 сек (1 минута)",
-            "max_delay": "180 сек (3 минуты)",
-            "typing_indicator": "включен",
-            "fast_mode_threshold": "120 сек (2 минуты)"
-        }
-    })
-
 @app.route('/')
 def home():
     return jsonify({
         "status": "active",
         "bot": "@Tarotyour_bot",
-        "message": "Бот работает с задержками 1-3 минуты и показывает статус 'печатает'"
+        "description": "Бот-таролог, который сразу работает с проблемами",
+        "features": [
+            "Не требует /start - начинает диалог с первого сообщения",
+            "Определяет проблемы автоматически",
+            "Уникальные неповторяющиеся ответы",
+            "Задержки 1-3 минуты"
+        ]
     })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    logger.info(f"🚀 Запуск бота с задержками 1-3 минуты на порту {port}")
+    logger.info("🚀 Бот запущен - работает БЕЗ обязательного /start")
+    logger.info("🎯 Начинает диалог с первого сообщения пользователя")
     logger.info("⏰ Задержки: 60-180 секунд")
-    logger.info("⌨️ Индикатор 'печатает': включен")
     app.run(host='0.0.0.0', port=port, debug=False)
